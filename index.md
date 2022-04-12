@@ -10,6 +10,3 @@ RMarkdown (RMD) file for Homework 1: [Here](IE360_Spring22_HW1/HW1_UmutYalcinkay
 
 ### Homework 2
 ### Homework 3
-
-
-[link]
