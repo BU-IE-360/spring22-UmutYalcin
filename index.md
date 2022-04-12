@@ -6,7 +6,7 @@
 
 HTLM file for Homework 1: [Here](https://bu-ie-360.github.io/spring22-UmutYalcinkaya/IE360_Spring22_HW1/HW1_UmutYalcinkaya.html)
 
-RMarkdown (RMD) file for Homework 1: [Here](IE360_Spring22_HW1/HW1_UmutYalcinkaya.Rmd) is the RMarkdown (RMD) file for Homework 1
+RMarkdown (RMD) file for Homework 1: [Here](IE360_Spring22_HW1/HW1_UmutYalcinkaya.r)
 
 ### Homework 2
 ### Homework 3
