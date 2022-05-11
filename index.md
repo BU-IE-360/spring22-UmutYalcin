@@ -16,4 +16,6 @@ HTLM file for Homework 2: [Here](https://bu-ie-360.github.io/spring22-UmutYalcin
 
 R file for Homework 2: [Here](IE360_Spring22_HW2/HW2_UmutYalcinkaya.r)
 
+Markdown file for Homework 2: [Here](IE360_Spring22_HW2/HW2_UmutYalcinkaya_markdown.zip)
+
 ### Homework 3
