@@ -27,6 +27,4 @@ Markdown file for Homework 2: [Here](IE360_Spring22_HW2/HW2_UmutYalcinkaya_markd
 
 HTLM file for Group 23: [Here](https://bu-ie-360.github.io/spring22-UmutYalcinkaya/IE360_Spring22_Project/Project_UmutYalcinkaya.html)
 
-R file for Group 23: [Here](IE360_Spring22_Project/Project_UmutYalcinkaya.r)
-
-Markdown file for Group 23: [Here](IE360_Spring22_Project/Project_UmutYalcinkaya_markdown.zip)
+R Markdown file for Group 23: [Here](IE360_Spring22_Project/Project_UmutYalcinkaya.rmd)
