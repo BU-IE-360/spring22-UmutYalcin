@@ -865,5 +865,16 @@ pred <- format(round(pred, 3))
 # paste((pred), collapse=",")
 ```
 
+### Conclusion
+
+Forecasting the electricity production of solar panels is one of the vital subjects that energy companies must pay attention to. With a given precious production data and  weather data feed, we’ve tried to find correlation between electricity production and weather data to forecast the coming days’ production with the help of statistical tools, regression, time series etc.
+
+Low error rate is so crucial in forecasting because your forecasted value must be as close as possible to actual value. To obtain satisfying forecasts, we’ve converted the data from each sensor(Temp, humidity, DSWRF, low_cloud_layer) from “long format” to “wide format” and added new predictors that were derived from the calculations with the data of sensors. Subsequently, we’ve used time series the visualize the data and we got many insights under the favor of time series. We’ve normalized the data in necessary time intervals using moving max functions and clear sky production values.
+
+While forecasting the coming days’ production, we’ve used the Regression Analysis in this study. We obtain the correlation table to choose which variable will be taken into consideration during the forecasting process. After checking the correlation for each variable, we’ve decided to use a polynomial regression model for some predictors. After all processes, we found utilization value by production / max production process. Then we multiplied the utilization value by 35 and got forecasted electricity production amount as Megawatt.
+
+To test our models, we’ve set the last 20 days’ data into a test set while remaining data was used to train models. Although we obtain a regression model for whole data, once we realized that the production varies hugely hour to hour, combinatory variables of each hour added to the model. Then after several trials, once we checked the models, we found out that seasonality was not represented well in our model and significant autocorrelation was present. We’ve addressed this problem by modeling each hour independently. Afterwards, we ran our model again and saw we solved many of the previous model’s problems but some problems were there again. Even though we tried to solve them, we couldn't perfectly stationarized the model and use the regression model with the least RMSE value for our test perriod. 
+
+
 #### R Markdown File: 
 https://bu-ie-360.github.io/spring22-UmutYalcinkaya/IE360_Spring22_Project/Project_UmutYalcinkaya.rmd
