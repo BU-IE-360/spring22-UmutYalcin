@@ -1,0 +1,880 @@
+---
+title: "IE360 Project - Group 23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+
+## Solar Power Forecasting
+
+#### By Umut Yalçınkaya
+
+### Introduction
+
+In this study, our main aim is to predict the coming days’ electricity production for KIVANC 2 GES (Güneş Enerjisi Santrali) which will benefit from previous electricity production levels. Electricity production with solar panels is affected with many variables such as temperature, humidity, The Downward Short-Wave Radiation Flux (DSWRF) etc. and we’ve used these variables to obtain a regression model to predict coming days’ production levels.
+
+To get weather feeds around the production area to estimate production level for coming days, there are 9 locations that weather sensors are established. These sensors measure 4 different types of data that are used to forecast weather conditions. In our work, we relied on the data feeds of the closest sensor of the production field as well as average and standard deviation values of the measurements of these sensors.
+
+Here the list of data types - variables that we’ve got from each sensors to predict daily electricity production: 
+
+TEMP:  Represents the temperature information on the facility location. the effect of this variable can be observed as seasonality in electricity production data of the previous year. High temperature causes high heat accumulation on solar panels and this drops the electricity production drastically.  
+
+REL_HUMIDITY: Humidity is the concentration of water vapor present in the air and Relative Humidity is the representation of the proportion of actual humidity in air to max humidity in the same temperature. It’s related to rainy or cloudy days which causes lower electricity production.
+
+DSWRF: The Downward Short-Wave Radiation Flux (DSWRF) refers to the radiative energy in the wavelength interval [0.3 µm, 4.0 µm] reaching the Earth's surface per time and surface unit.  This variable has a great influence on electricity production. 
+
+CLOUD_LOW_LAYER: Represents the total cloud cover as a percentage value for lower level clouds. Lower layer clouds include cumulus, stratus, stratocumulus types of clouds. These clouds  may decrease the  daily electricity production due to their opacity which prevents sun lights to reaching the earth surface.
+
+### Data Manuplation and Visualization
+
+We used following libraries for our analysis in this project
+
+```{r}
+library(rlang)
+library(readr)
+library(reshape2)
+library(dplyr)
+library(zoo)
+library(lubridate)
+library(forecast)
+library(data.table)
+library(ggplot2)
+library(ggcorrplot)
+library(stats)
+library(Metrics)
+library(matrixStats)
+library(GGally)
+```
+
+Before starting to create a model, we analyzed data visually by several methods. Firstly we created a time series graphs that can be seen below, a time series graphic makes it easy to see if the data has a pattern or seasonality. Additionally, a more intuitive forecasting may be done more readily using a time series. From the graphs, it can be seen that solar electricity production becomes 0 at the nighttime and goes to the maximum level at the midday where there is direct sunlight. However, due to the weather situations, even at the time where the sun is highest, electricity production may be significantly low. This might be because of clouds or other weather events that might hinder the sunlight falling onto the subject power plant. 
+
+Another interesting aspect of this is the daily maximum production levels of this plant. Before June of 2021 we can see that daily maximum solar electricity production increases linearly day by day. We guessed that the main reason for this might be the increasing the production capacity day by day. In the further parts of this project we have tried ways of normalizing this data.
+
+To make this data more useful for us, we’ve tried to find clear-sky-production data for each interval. Clear-sky-production means the maximum electricity production while sky is completely clear
+
+```{r}
+getwd()
+long_weather <- fread ("C:/Users/Umut/Desktop/dersler/IE 360/Project/Submission Phase/2022-05-22_weather.csv")
+production <- fread ("C:/Users/Umut/Desktop/dersler/IE 360/Project/Submission Phase/2022-05-22_production.csv")
+
+production[,datetime := ymd(date)+dhours(hour)]
+production[,date := ymd(date)]
+production[,week := week(date)]
+ggplot(subset(production,datetime >= "2022-05-01"),aes(x=datetime, y=production))+
+geom_line()+geom_point()+ggtitle("Electricity Production May 2022")
+ggplot(production,aes(x=datetime, y=production))+
+geom_line()+ggtitle("All Electricity Production Data")
+```
+ In order to make these weather data useful for our regression analysis, we’ve converted long data to a wide format using dcast() function. To make this possible we also converted variable, latitude and longitude columns of given data into factors. Since there are 4 different data types coming from each of the sensors in 9 different locations, a total of 36 different columns were formed.
+
+```{r}
+long_weather$variable <- factor(long_weather$variable)
+long_weather$lat <- factor(long_weather$lat)
+long_weather$lon <- factor(long_weather$lon)
+
+wide_weather <- dcast(long_weather, date + hour ~ variable+lat+lon, value.var="value")
+wide_weather[,datetime := ymd(date)+dhours(hour)]
+```
+
+To use these production and weather variables in the regression model, we merge them to the same data table.
+
+```{r}
+production <- merge(x = production, y = wide_weather, by="datetime")
+production <- production[,-c(6,7)]
+setnames(production, old = c('date.x','hour.x'), new = c('date','hour'))
+```
+
+
+### Regression Approach and Use of Given Predictors
+
+While estimating next day’s electricity production with weather conditions data, we’ve used Regression Analysis in this project. A collection of statistical procedures for estimating correlations between a dependent variable and one or more independent variables is known as regression analysis.Regression analysis can be practiced to evaluate the correlation robustness of variables and modeling their relationships. 
+
+In order to decide which combination of variables are going to be used in the regression model, a correlation plot is created (shown below). While understanding this plot is really hard due to the number of variables, it was analyzed by writing it as an excel file. Also more summary graphs were prepared later by using the averages of the data given by the weather stations.
+
+```{r}
+correl_info = cor(production[,3:41])
+ggcorrplot(correl_info, type="lower", lab=TRUE)
+#write.csv(correl_info,"C:/Users/Umut/Desktop/dersler/IE 360/Project/cor.csv")
+```
+
+We also looked at the locations of weather stations that these data sets are originating from. Main reason for this is that weather stations that are closer to the production facility might be more beneficial to use. In the following image it can clearly be seen that one of these stations are extremely close to the facility. 
+
+![Alt text.](/Users/Umut/Desktop/dersler/IE 360/Project/Sensor Location.jpg )
+
+Weather station with 36.5 N, 33.25 E coordinates might be more relevant for our model due to the proximity to the power plant. However, using all the data from all 9 sensors might also be useful due to the several reasons. 
+
+Firstly, due to the nature of weather forecasting, variation of the data from only one station might be too high and reduce the accuracy of our predictions. To reduce the noise of the weather production data, average of all 9 stations could be taken into account while predicting. Also, sensors from different geographical areas might mean different things. For example if all the sensors in the south of power plant shows a cloudy situation, that might mean solar production will drop in the following hour. To see the effect of such situations additional columns are created by taking means of 3 northern and 3 southern sensors. Lagged versions of these predictors are also added to the data set.
+
+In addition to these variables, standard deviations of all 9 sensors for each hour period is taken. An increase in standard deviation between all sensors might mean the unpredictability of the weather situation which may affect solar electricity production negatively.
+
+```{r}
+production$avgcloud <-  rowMeans(production[,6:14])
+production$southcloud <-  rowMeans(production[,6:8])
+production$northcloud <-  rowMeans(production[,12:14])
+
+production$avgsun <-  rowMeans(production[,15:23])
+production$southsun <-  rowMeans(production[,15:17])
+production$northsun <-  rowMeans(production[,21:23])
+
+production$avghum <-  rowMeans(production[,24:32])
+production$southhum<-  rowMeans(production[,24:26])
+production$northhum <-  rowMeans(production[,30:32])
+
+production$avgtemp <-  rowMeans(production[,33:41])
+production$southtemp <-  rowMeans(production[,33:35])
+production$northtemp <-  rowMeans(production[,39:41])
+
+production$southcloudlag1 <- lag(production$southcloud,n=1L)
+production$southsunlag1 <- lag(production$southsun,n=1L)
+production$southhumlag1 <- lag(production$southhum,n=1L)
+production$southtemplag1 <- lag(production$southtemp,n=1L)
+
+production$northcloudlag1 <- lag(production$northcloud,n=1L)
+production$northsunlag1 <- lag(production$northsun,n=1L)
+production$northhumlag1 <- lag(production$northhum,n=1L)
+production$northtemplag1 <- lag(production$northtemp,n=1L)
+
+production$sdcloudsensors <- rowSds(as.matrix(production[,6:14]))
+production$sdsunsensors <- rowSds(as.matrix(production[,15:23]))
+production$sdhumsensors <- rowSds(as.matrix(production[,24:32]))
+production$sdtempsensors <- rowSds(as.matrix(production[,33:41]))
+```
+
+To understand the effects of 4 variables to the production level, correlations, scatter plots and distributions are plotted with ggpairs() function.
+
+```{r}
+graph <-production[,c('production','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph))
+```
+While there are some seemingly linear correlations between the predictors above, not much can be understood by just looking this graph due to the high number of data points. Some takeaways from these graphs include:
+
+-High positive correlation between DSWRF values and production.
+
+-There is clear negative correlation between humidity and production, while it is less apparent than the one with DSWRF.
+
+-Temperature also shows a clear postive correlation with production.
+
+-Looking at the distributions, Temperature and humidity shows a distribution similar to the normal while DSWRF and Cloud variables show a distribution like exponential.
+
+Analyzing data from each hour individually might give us more clearer results. For example, for hour 18.00:
+
+From these graphs we can clearly see that there is a polynomial relation between avgsun-production and avgtemp-production values for hour = 18.00. This shows that using a polynomial regression model for some of these predictors would be much more beneficial than using a linear one.
+
+```{r}
+hourly <- filter(production, hour == 18)
+graph <-hourly[,c('production','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph))
+```
+
+To address the irregularities of the production data we discussed at the introduction and to use this data in a most logical way in our model, we decided to find clear-sky-production values for the each data point. Clear sky production means the maximum electricity production while the sky is completely clear and sunny. In some parts of the data set this limit was somewhat clear to naked eye. For certain reasons, there seemed to be an artificial upper limit of 40mw in this power plant in the summer of 2021 (may be related to licencing), so the max-production value of this range was determined manually as 40mw. Likewise, in the data from December 2021 to the present, this artificial limit was seen as 36 mw, and 35mw at at certain places and was therefore determined manually. For the problematic part before 2021-06-06, we used the rollmax() function to find the maximum production in the last 360 hours and set this value as max-production. Afterwards, the utilization value was found by performing the production/max-production process. While this value is 0 at night, this value becomes 1 when maximum production is made. During our estimations, we made a utilization estimation and then multiplied by 35 and forecasted the Megawatt of electricity that is going to be produced.
+
+This maximum production limit is shown by the red line in the following graph.
+
+```{r}
+production$movingmax <- rollmax(production$production, k = 360,fill = NA,align = c("right"))
+production <- production %>% mutate(movingmax = case_when(
+  (datetime <"2021-06-06") ~ movingmax,
+  (datetime >= "2021-06-06" & datetime <="2021-06-19") ~ 36,    
+  (datetime > "2021-06-19" & datetime <="2021-11-17") ~ 40,
+  (datetime > "2021-11-17" & datetime <="2022-01-15") ~ 36,
+  (datetime > "2022-01-15") ~ 35))
+production$utilization <- (production$production / production$movingmax)
+
+ggplot(subset(production,datetime >= "2021-02-01"))+geom_line(aes(x=datetime, y=production))+
+  geom_line(aes(x=datetime, y=movingmax), col="red")
+```
+
+Additional lagged variables are also added since they might be useful to the model. However, due to the late update of electricity production data, we do not have the last 48 hours while predicting. Thus, while predicting 25 of May, last available production data was for 22 of May. For this reason we can not use the data that is lagged less than 72 hours.
+
+```{r}
+production$utilizationlag72 <- lag(production$utilization,n=72L)
+production$utilizationlag73 <- lag(production$utilization,n=73L)
+production$utilizationlag74 <- lag(production$utilization,n=74L)
+```
+
+To test the models we created, last 20 days of the data sets are seperated as test period while all other data is used to train our models.
+
+```{r}
+datadate <- "2022-05-01"
+predictiondate <-"2022-05-20"
+productiontrain <- filter(production, date<=datadate)
+productiontest <- filter(production, date>datadate)
+productiontest <- filter(productiontest, date<=predictiondate)
+```
+
+First We created one regression model for the whole data set. To consider hourly seasonality, we added factorial variables for each hour. And since effect of weather data can change significantly from hour to hour, combinatory variables of each hour combined with each measurement from the nearest sensor are added to the model. Measurements from the closest sensor was used for this purpose. After several trial and error following model is found to be one of the best in terms of Adjusted R-squared.
+
+```{r}
+#One Model Approach
+productiontrain <- filter(production, date<="2022-05-01")
+productiontest <- filter(production, date>"2022-05-01")
+productiontest <- filter(productiontest, date<="2022-05-20")
+
+modelproduction <- lm(utilization ~ datetime+
+                        factor(hour)*DSWRF_36.5_33.25+
+                        factor(hour)*TEMP_36.5_33.25+
+                        factor(hour)*REL_HUMIDITY_36.5_33.25+
+                        factor(hour)*CLOUD_LOW_LAYER_36.5_33.25+
+                        utilizationlag72+
+                        utilizationlag73+
+                        utilizationlag74+
+                        avgcloud+southcloud+northcloud+
+                        avgsun+southsun+northsun+
+                        avghum+southhum+northhum+
+                        avgtemp+southtemp+northtemp, data = productiontrain)
+
+summary(modelproduction)
+
+
+productiontest$modelprediction <-predict(modelproduction,productiontest)
+
+for(i in (1:nrow(productiontest))){
+  if(productiontest$hour[i] >= 21 | productiontest$hour[i] <= 5){
+    productiontest$modelprediction[i]=0
+  }
+  if(productiontest$modelprediction[i] >= 0.95 ){
+    productiontest$modelprediction[i]=1
+  }
+  if(productiontest$modelprediction[i] <= 0 ){
+    productiontest$modelprediction[i]=0
+  }
+}
+
+print("Root mean squared error =") 
+rmse(productiontest$utilization, productiontest$modelprediction)
+
+acf(modelproduction$residuals)
+plot(modelproduction$residuals)
+plot(modelproduction)
+```
+
+When we look at the model above, several problems could be seen:
+Firstly, even with the factor(hour) variables and their combinatory effects on weather forecast data, it seems that model residuals still shows significant autocorrelation at lag 24. This means that seasonality of the data is not represented enough in the regression model and there is more information to use in the data.
+
+Also residuals does not seem to fit normal distribution and stationarity is definitely not achieved in the residuals of this model. As it can be seen in the residual graph, variation at the summer of 2021 is lower than the other parts of the data. This might be because of more predictable and sunny weather at the summer season. We decided that to address seasonality better, modelling each hour independently would be more beneficial.
+
+```{r}
+hourly <- filter(productiontrain, hour == 7)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '07.00')
+hourly <- filter(productiontrain, hour == 8)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '08.00')
+hourly <- filter(productiontrain, hour == 9)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '09.00')
+hourly <- filter(productiontrain, hour == 10)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '10.00')
+hourly <- filter(productiontrain, hour == 11)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '11.00')
+hourly <- filter(productiontrain, hour == 12)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '12.00')
+hourly <- filter(productiontrain, hour == 13)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '13.00')
+hourly <- filter(productiontrain, hour == 14)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '14.00')
+hourly <- filter(productiontrain, hour == 15)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '15.00')
+hourly <- filter(productiontrain, hour == 16)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '16.00')
+hourly <- filter(productiontrain, hour == 17)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '17.00')
+hourly <- filter(productiontrain, hour == 18)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '18.00')
+hourly <- filter(productiontrain, hour == 19)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '19.00')
+hourly <- filter(productiontrain, hour == 20)
+graph <-hourly[,c('utilization','avgsun','avgtemp','avgcloud','avghum')]
+ggpairs(data.frame(graph), title = '20.00')
+```
+
+When we plot the averages of the weather values against utilization for hour 08.00 it is clear that average DWSRF values show a clear polynomial relation with the utilization values. While temperature and humidity shows a more or less linear relation with the utilization for this hour, average cloud coverage is also either polynomial or exponentially related to the utilization. By far the highest correlation values are between utilization and DWSRF (avgsun in my variable names)
+
+However, for different hour relation between weather data and utilization changes. For example DWSRF values behave polynomially in respect to utilization for hours before 10 am and after 17 pm, for hours between these, the behaviour more clearly seen as linear. 
+
+In theory, very high temperatures might result in reduction of solar panel's efficiency. However, significant drop in high temperatures are not seen in these data points. The reason for this might be the artificial limit put on to the solar production for whatever reason. Due to the low limit of production, even the heated less-efficient panels probably can produce 35 mw. Thus, this data set does not show us the reduction effect due to the heat clearly. Thus, we decided not to address this concern.
+
+Correlation values also change drastically for each hour. By looking at each hours correlation values and graphs, we decided to employ which parameters in what order in following regression models. 
+
+Other than the correlation values, while creating the model for each our of the day (other than when it is night) first a model is created using all of the variables created until this point using the following function:
+
+modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+
+After, seen the significance of the each variable, must unrelated ones are slowly taken out of the model resulting in the model with most relevant variables. Also, several combinatory and polynomial predictors are added to the models if they improved the Adjusted R-squared value. After these steps, residuals of each model is checked with checkredisuals() function to see if independence, constant mean and constant variation assumptions are satisfied. While generally autocorrelation between each residual seemed to be nonexistent which means that we solved the autocorrelation problem that was present in the one model approach. While mean of the residuals were centered around 0, variation was widely inconsistent and we could not decisively solved this problem. We also observed that residuals were more closer to the normal distribution in the unique models approach when compared to the one model approach.
+
+
+```{r}
+
+ # Unique Models for Each Hour Approach
+
+errors <- matrix(0,nrow=24,ncol=1)
+pred <- matrix(0,nrow=1,ncol=24)
+  
+{
+  hourly <- filter(production, hour == 6)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~   date+utilizationlag3+    utilizationlag4+       
+                      sdhum+
+                      poly(avgsun,2)+poly(avgcloud,2)+poly(avgtemp,2)+avghum+
+                      DSWRF_36.5_33.5            +
+                      DSWRF_36.25_33.25            +
+                      DSWRF_36.25_33             +
+                      CLOUD_LOW_LAYER_36.75_33.25  +
+                      southcloudlag1+
+                      northtemplag1+northhumlag1+
+                      sdtempsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#   checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[6,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,6] <- hourlytest$modelprediction
+}  
+
+{
+  hourly <- filter(production, hour == 7)
+  
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~                         utilizationlag3+
+                      utilizationlag5+
+                      sdsun*sdcloud*sdhum+
+                      avgsun*avgtemp*avghum+
+                      poly(avgsun,2)+
+                      TEMP_36.25_33               +
+                      REL_HUMIDITY_36.25_33         +
+                      DSWRF_36.5_33                +
+                      DSWRF_36.5_33.25            +
+                      southsun*southtemp+
+                      northtemplag1+
+                      sdtempsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[7,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,7] <- hourlytest$modelprediction
+}  
+
+{
+  hourly <- filter(production, hour == 8)
+  
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ 
+                      sdcloud*sdtemp+                      
+                      southsun*southtemp+
+                      poly(avghum,2)+poly(avgsun,2)+avgcloud+
+                      TEMP_36.75_33.25             +
+                      TEMP_36.25_33               +
+                      southtemplag1+southsunlag1+
+                      northtemplag1+northsunlag1+
+                      DSWRF_36.5_33.25*TEMP_36.5_33.25*REL_HUMIDITY_36.5_33.25+
+                      sdsunsensors+factor(week), data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[8,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,8] <- hourlytest$modelprediction
+}  
+
+{
+  hourly <- filter(production, hour == 9)
+  
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~   date+
+                      sdsun+sdtemp+sdcloud+sdhum+
+                      poly(avgsun,3)+ poly(avgcloud,2)+ poly(avghum,3)+avgcloud*avgtemp*avghum+
+                      southtemp+
+                      REL_HUMIDITY_36.25_33.5      +
+                      CLOUD_LOW_LAYER_36.5_33.25  +
+                      southtemplag1+southsunlag1+southhumlag1+
+                      northcloudlag1+northsunlag1+
+                      sdsunsensors*sdhumsensors+factor(month(date)) , data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[9,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,9] <- hourlytest$modelprediction
+} 
+
+{
+  hourly <- filter(production, hour == 10)
+  
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~   date+
+                      utilizationlag4+
+                      sdtemp+sdsun+sdhum+sdcloud +                       
+                      poly(avgsun,2)+poly(avgtemp,2)+poly(avgcloud,3)+poly(avghum,3)+
+                        CLOUD_LOW_LAYER_36.5_33.25  +
+                        CLOUD_LOW_LAYER_36.25_33.25  +
+                      southcloudlag1+
+                      northtemplag1+northsunlag1+
+                      sdsunsensors+sdtempsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[10,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,10] <- hourlytest$modelprediction
+} 
+
+{
+  
+  hourly <- filter(production, hour == 11)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ sdtemp*sdsun+
+                      poly(avghum,2)+poly(avgcloud,2)+poly(avgtemp,2)+
+                      avgsun*avgtemp*avgcloud+avghum+
+                      southtemp+
+                      CLOUD_LOW_LAYER_36.5_33.25  +
+                      DSWRF_36.5_33                +
+                      southsunlag1+southcloudlag1+
+                      northcloudlag1*northtemplag1*northsunlag1+
+                      sdcloudsensors*sdsunsensors*sdtempsensors, data = hourlytrain)
+ # summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[11,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,11] <- hourlytest$modelprediction
+} 
+
+{
+  
+  hourly <- filter(production, hour == 12)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+sdtemp*sdsun+
+                      poly(avgsun,3)+poly(avgtemp,3)+avghum+poly(avgcloud,2)+
+                      southtemplag1*southsunlag1*southcloudlag1+
+                      CLOUD_LOW_LAYER_36.5_33.25  +
+                      DSWRF_36.5_33.25            +
+                      northsunlag1+
+                      sdcloudsensors*sdtempsensors+sdsunsensors*sdtempsensors, data = hourlytrain)
+  
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[12,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,12] <- hourlytest$modelprediction
+} 
+
+{
+  
+  hourly <- filter(production, hour == 13)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+
+                      poly(avgsun,2)+poly(avghum,2)+
+                      DSWRF_36.5_33.25*TEMP_36.5_33.25*REL_HUMIDITY_36.5_33.25+
+                      CLOUD_LOW_LAYER_36.5_33.25+                
+                      southtemplag1+southsunlag1+southcloudlag1+
+                      northcloudlag1+northsunlag1+
+                      sdcloudsensors+sdsunsensors+sdhumsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[13,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,13] <- hourlytest$modelprediction
+} 
+
+{
+hourly <- filter(production, hour == 14)
+hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+
+hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+modelhourly <- lm(utilization ~ date+sdtemp+sdhum+
+                    poly(avgsun,2)+poly(avgcloud,2)+avghum+
+                    DSWRF_36.5_33.25*CLOUD_LOW_LAYER_36.25_33.5+
+                    REL_HUMIDITY_36.75_33.25    +
+                    DSWRF_36.75_33.5             +
+                    southtemplag1*southsunlag1+southcloudlag1+
+                    northtemplag1*northsunlag1+northhumlag1+
+                    sdcloudsensors+factor(week), data = hourlytrain)
+#summary(modelhourly)
+hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#  checkresiduals(modelhourly)
+
+#print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+errors[14,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#pred[1,14] <- hourlytest$modelprediction
+}
+
+{
+  hourly <- filter(production, hour == 15)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+
+                      poly(avgsun,3)+poly(avgcloud,2)+
+                      DSWRF_36.5_33.25+
+                      TEMP_36.75_33.25+
+                      REL_HUMIDITY_36.75_33.25+ 
+                      southtemplag1*southsunlag1+
+                      northtemplag1*northsunlag1+northhumlag1+
+                      sdsunsensors*sdtempsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[15,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+ # pred[1,15] <- hourlytest$modelprediction
+}
+
+{
+  hourly <- filter(production, hour == 16)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+
+                      poly(sdtemp,2)+
+                      poly(avgsun,3)+avgtemp+avgcloud+
+                      DSWRF_36.5_33.5+TEMP_36.5_33.5+REL_HUMIDITY_36.5_33.5+CLOUD_LOW_LAYER_36.5_33.5+
+                      southtemplag1+southhumlag1+
+                      northhumlag1+
+                      sdsunsensors*sdcloudsensors     , data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[16,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,16] <- hourlytest$modelprediction
+}
+
+{
+  hourly <- filter(production, hour == 17)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+  #  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+
+                      sdtemp+sdsun+
+                      poly(avgsun,2)+avgtemp+avgcloud+
+                      DSWRF_36.5_33+REL_HUMIDITY_36.5_33+CLOUD_LOW_LAYER_36.5_33+
+                      northhumlag1+northtemplag1+
+                      sdcloudsensors+sdsunsensors+factor(month(date)), data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[17,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,17] <- hourlytest$modelprediction
+}
+
+{
+  hourly <- filter(production, hour == 18)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+  #  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)  
+  modelhourly <- lm(utilization ~ date+utilizationlag3+utilizationlag4+
+                      poly(sdtemp,2)+sdsun+sdcloud+
+                      poly(avgsun,2)+poly(avgtemp,2)+poly(avghum,2)+
+                      TEMP_36.25_33               +
+                      DSWRF_36.25_33.5             +
+                      DSWRF_36.25_33               +
+                      DSWRF_36.75_33               +
+                      CLOUD_LOW_LAYER_36.25_33.5   +
+                      CLOUD_LOW_LAYER_36.75_33.5   +
+                      southsunlag1+southcloudlag1+southtemplag1+
+                      northsunlag1+
+                      sdcloudsensors*sdhumsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[18,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,18] <- hourlytest$modelprediction
+}
+
+{
+  hourly <- filter(production, hour == 19)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+   #  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain) 
+  modelhourly <- lm(utilization ~ date+utilizationlag3+utilizationlag4+utilizationlag5+              
+                      poly(sdtemp,2)+sdsun+sdcloud+
+                      poly(avgsun,2)+poly(avgtemp,2)+poly(avghum,2)+
+                      DSWRF_36.75_33.25            +
+                      DSWRF_36.75_33.5             +
+                      TEMP_36.25_33                +
+                      CLOUD_LOW_LAYER_36.75_33.25  +
+                      CLOUD_LOW_LAYER_36.25_33+
+                      southsunlag1+
+                      northsunlag1+northcloudlag1+
+                      sdcloudsensors*sdhumsensors, data = hourlytrain)
+#  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+#    checkresiduals(modelhourly)
+
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[19,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,19] <- hourlytest$modelprediction
+}
+
+print("mean error")
+print(mean(errors))
+```
+
+ Expectedly, root mean squared errors of the approach where we used unique models for each an every hour turned out to be much more successful than the one with one model. In the one model approach RMSE of utilization predictions of our test period was 0.15, while with the unique models approach this error value dropped to 0.10. After some trial and error with the regression model variables, this turned out to be one of the best models available.
+
+
+```{r}
+{
+  hourly <- filter(production, hour == 16)
+  hourly$utilizationlag3 <- lag(hourly$utilization,n=3L)
+  hourly$utilizationlag4 <- lag(hourly$utilization,n=4L)
+  hourly$utilizationlag5 <- lag(hourly$utilization,n=5L)
+  
+  hourly$sdcloud <- rollapplyr(hourly$avgcloud,3,sd,fill = 0)
+  hourly$sdtemp <- rollapplyr(hourly$avgtemp,3,sd,fill = 0)
+  hourly$sdsun <- rollapplyr(hourly$avgsun,3,sd,fill = 0)
+  hourly$sdhum <- rollapplyr(hourly$avghum,11,sd,fill = 0)
+  
+  hourlytrain <- filter(hourly, date<=datadate)
+  hourlytest <- filter(hourly, date<=predictiondate)
+  hourlytest <- filter(hourlytest, date>datadate)
+#  modelhourly <- lm(utilization ~ .-datetime-production-movingmax, data=hourlytrain)
+  modelhourly <- lm(utilization ~ date+
+                      poly(sdtemp,2)+
+                      poly(avgsun,3)+avgtemp+avgcloud+
+                      DSWRF_36.5_33.5+TEMP_36.5_33.5+REL_HUMIDITY_36.5_33.5+CLOUD_LOW_LAYER_36.5_33.5+
+                      southtemplag1+southhumlag1+
+                      northhumlag1+
+                      sdsunsensors*sdcloudsensors     , data = hourlytrain)
+  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+  checkresiduals(modelhourly)
+#  print(rmse(hourlytest$utilization, hourlytest$modelprediction))
+  errors[16,1] <- rmse(hourlytest$utilization, hourlytest$modelprediction)
+#  pred[1,16] <- hourlytest$modelprediction
+}
+```
+
+When we looked at the residuals of these models we see that some of the problems of previous model has been solved. Residuals of most of the hours does not show any significant autocorrelation between each other which was a major problem with the one model approach. Also, distribution of the residuals are much more closer to normal distribution. These improvements shows that splitting data set into hours and modelling them separately was a step beneficial for better forecasting. However, we could not solve all of the problems. Mainly residual plot of most of the hours were not stationary in terms of variance. While their mean centered around 0 and autocorrelation was mostly non existent, we could not reduce the variance difference enough.
+
+We suspected this was due to the more consistent nature of weather during summer months and more inconsistent weather patterns at other seasons. To counter this we even added a month factor to our model (shown below) but residuals was still not stationary.
+
+```{r}
+{
+
+  modelhourly <- lm(utilization ~ date+
+                      poly(sdtemp,2)+
+                      poly(avgsun,3)+avgtemp+avgcloud+
+                      DSWRF_36.5_33.5+TEMP_36.5_33.5+REL_HUMIDITY_36.5_33.5+CLOUD_LOW_LAYER_36.5_33.5+
+                      southtemplag1+southhumlag1+
+                      northhumlag1+
+                      sdsunsensors*sdcloudsensors+factor(month(date))     , data = hourlytrain)
+  summary(modelhourly)
+  hourlytest$modelprediction <-predict(modelhourly,hourlytest)
+  checkresiduals(modelhourly)
+}
+```
+After seeing these results while being unable to stationarize the series completely and due to the time constraints, we accepted imperfection of our model and 0.10 RMSE value of our utilization predictions seemed good enough. Thus we predicted most of our competition phase with this model.
+
+### Post Proccessing
+
+After the predictions are made we realized that it is beneficial to round some values to be more accurate. If the model shows a utilization value larger than the 0.95 it is highly likely that that hour is extremely suitable for solar production. Thus, rounding the utilization value up to 1.0 was beneficial. This way we accurately predicted sunny days when electricity production from this plant turned out to be exactly 35 mw on day hours. We also rounded down values lower than 0.05 to 0 for similar reason. We also eliminated negative and larger than 1 utilization values this way.
+
+```{r}
+  for(i in (1:24)){
+    if(pred[1,i] >= 0.95){pred[1,i]=1}
+    if(pred[1,i] <= 0.05){pred[1,i]=0}
+  }
+pred <- pred*35
+pred <- format(round(pred, 3))
+# paste((pred), collapse=",")
+```
+
+### Conclusion
+
+Forecasting the electricity production of solar panels is one of the vital subjects that energy companies must pay attention to. With a given precious production data and  weather data feed, we’ve tried to find correlation between electricity production and weather data to forecast the coming days’ production with the help of statistical tools, regression, time series etc.
+
+Low error rate is so crucial in forecasting because your forecasted value must be as close as possible to actual value. To obtain satisfying forecasts, we’ve converted the data from each sensor(Temp, humidity, DSWRF, low_cloud_layer) from “long format” to “wide format” and added new predictors that were derived from the calculations with the data of sensors. Subsequently, we’ve used time series the visualize the data and we got many insights under the favor of time series. We’ve normalized the data in necessary time intervals using moving max functions and clear sky production values.
+
+While forecasting the coming days’ production, we’ve used the Regression Analysis in this study. We obtain the correlation table to choose which variable will be taken into consideration during the forecasting process. After checking the correlation for each variable, we’ve decided to use a polynomial regression model for some predictors. After all processes, we found utilization value by production / max production process. Then we multiplied the utilization value by 35 and got forecasted electricity production amount as Megawatt.
+
+To test our models, we’ve set the last 20 days’ data into a test set while remaining data was used to train models. Although we obtain a regression model for whole data, once we realized that the production varies hugely hour to hour, combinatory variables of each hour added to the model. Then after several trials, once we checked the models, we found out that seasonality was not represented well in our model and significant autocorrelation was present. We’ve addressed this problem by modeling each hour independently. Afterwards, we ran our model again and saw we solved many of the previous model’s problems but some problems were there again. Even though we tried to solve them, we couldn't perfectly stationarized the model and use the regression model with the least RMSE value for our test perriod. 
+
+
+#### R Markdown File: 
+https://bu-ie-360.github.io/spring22-UmutYalcinkaya/IE360_Spring22_Project/Project_UmutYalcinkaya.rmd
